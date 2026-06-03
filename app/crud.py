@@ -1,104 +1,108 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
+from sqlalchemy.future import select  # Прибрали дублюючий імпорт select
+from datetime import datetime
+from typing import Optional, List
+
 from app.models import User, Profile, Car, ServiceRecord, Part
 from app.schemas.user import UserCreate
-from datetime import datetime
-from app.auth import get_password_hash  
+from app.security import get_password_hash
 
-# === ЛАБА 5 (АВТЕНТИФІКАЦІЯ) ===
-async def register_new_user(db: AsyncSession, user_data: UserCreate):
-    secure_hashed_password = get_password_hash(user_data.password)
+# === Користувачі ===
+
+async def get_user_by_username(db: AsyncSession, username: str) -> Optional[User]:
+    result = await db.execute(select(User).filter(User.username == username))
+    return result.scalars().first()
+
+async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
+    result = await db.execute(select(User).filter(User.email == email))
+    return result.scalars().first()
+
+# ДОДАЛИ ФУНКЦІЮ, ЯКУ ШУКАВ РОУТЕР:
+async def authenticate_user(db: AsyncSession, username: str) -> Optional[User]:
+    """Шукає користувача в базі даних за його ім'ям для подальшої авторизації"""
+    return await get_user_by_username(db, username)
+
+async def register_new_user(db: AsyncSession, user_data: UserCreate) -> User:
+    """Реєстрація юзера + автоматичне створення профілю."""
+    hashed_pwd = get_password_hash(user_data.password)
     
-    db_user = User(
+    new_user = User(
         username=user_data.username,
         email=user_data.email,
-        hashed_password=secure_hashed_password, 
+        hashed_password=hashed_pwd,
         age=user_data.age
     )
-    db.add(db_user)
-    await db.flush()
+    db.add(new_user)
+    await db.flush()  # Отримуємо ID юзера до коміту
     
-    db_profile = Profile(
-        full_name=user_data.username,
-        phone=None,
-        user_id=db_user.id
-    )
-    db.add(db_profile)
+    new_profile = Profile(full_name=user_data.username, user_id=new_user.id)
+    db.add(new_profile)
+    
     await db.commit()
-    await db.refresh(db_user)
-    return db_user
+    await db.refresh(new_user)
+    return new_user
 
-async def authenticate_user(db: AsyncSession, username: str):
-    result = await db.execute(select(User).filter(User.username == username))
-    return result.scalars().first()
+# === Автомобілі ===
 
-
-# === ЛАБА 4 (СТАРІ CRUD ОПЕРАЦІЇ) ===
-async def get_user_by_username(db: AsyncSession, username: str):
-    result = await db.execute(select(User).filter(User.username == username))
-    return result.scalars().first()
-
-async def create_user(db: AsyncSession, user_data: dict, profile_data: dict):
-    db_user = User(**user_data)
-    db.add(db_user)
-    await db.flush()
-    db_profile = Profile(**profile_data, user_id=db_user.id)
-    db.add(db_profile)
-    await db.commit()
-    await db.refresh(db_user)
-    return db_user
-
-async def get_cars_by_owner(db: AsyncSession, owner_id: int):
+async def get_cars_by_owner(db: AsyncSession, owner_id: int) -> List[Car]:
     result = await db.execute(select(Car).filter(Car.owner_id == owner_id))
     return result.scalars().all()
 
-async def create_car(db: AsyncSession, car_data: dict, owner_id: int):
-    db_car = Car(**car_data, owner_id=owner_id)
-    db.add(db_car)
+async def create_car(db: AsyncSession, car_data: dict, owner_id: int) -> Car:
+    new_car = Car(**car_data, owner_id=owner_id)
+    db.add(new_car)
     await db.commit()
-    await db.refresh(db_car)
-    return db_car
+    await db.refresh(new_car)
+    return new_car
 
+# === Сід бази (Database Seeding) ===
 
-# === СІД БАЗИ ДАНИХ ===
 async def seed_initial_data(db: AsyncSession):
-    user_check = await db.execute(select(User))
-    if user_check.scalars().first() is not None:
-        return {"message": "База даних вже містить дані!"}
+    """Наповнення бази тестовими даними."""
+    try:
+        # Перевірка чи є вже користувачі
+        result = await db.execute(select(User).limit(1))
+        if result.scalars().first():
+            return {"message": "База вже має дані."}
 
-    user = User(
-        email="denis.student@example.com",
-        username="Denis_IT",
-        hashed_password=get_password_hash("securejdm123"),
-        age=18
-    )
-    db.add(user)
-    await db.flush()
+        # Створення юзера
+        user = User(
+            email="denis.student@example.com",
+            username="Denis_IT",
+            hashed_password=get_password_hash("securejdm123"),
+            age=18
+        )
+        db.add(user)
+        await db.flush()
 
-    profile = Profile(
-        full_name="Denis",
-        phone="+380991234567",
-        user_id=user.id
-    )
-    db.add(profile)
+        # Профіль
+        profile = Profile(full_name="Denis", phone="+380991234567", user_id=user.id)
+        db.add(profile)
 
-    car1 = Car(brand="Nissan", model="Skyline GT-R R34", vin="BNR34-123456", owner_id=user.id)
-    car2 = Car(brand="Mazda", model="MX-5 Miata", vin="NA6CE-654321", owner_id=user.id)
-    db.add_all([car1, car2])
-    await db.flush()
+        # Автомобілі
+        car1 = Car(brand="Nissan", model="Skyline GT-R R34", vin="BNR34-123456", owner_id=user.id)
+        car2 = Car(brand="Mazda", model="MX-5 Miata", vin="NA6CE-654321", owner_id=user.id)
+        db.add_all([car1, car2])
+        await db.flush()
 
-    record = ServiceRecord(
-        description="Заміна масла в двигуні",
-        mileage=120000,
-        cost=4500.0,
-        date=datetime.utcnow(),
-        car_id=car1.id
-    )
-    db.add(record)
-    await db.flush()
+        # Запис сервісу
+        record = ServiceRecord(
+            description="Заміна масла",
+            mileage=120000,
+            cost=4500.0,
+            date=datetime.now(),
+            car_id=car1.id
+        )
+        db.add(record)
+        await db.flush()
 
-    part1 = Part(name="Моторне масло 5W-40", price=2500.0, record_id=record.id)
-    db.add(part1)
+        # Деталі
+        part = Part(name="Моторне масло 5W-40", price=2500.0, record_id=record.id)
+        db.add(part)
 
-    await db.commit()
-    return {"message": "База даних успішно наповнена початковими даними!"}
+        await db.commit()
+        return {"message": "Дані успішно додано!"}
+    
+    except Exception as e:
+        await db.rollback()
+        return {"error": str(e)}
